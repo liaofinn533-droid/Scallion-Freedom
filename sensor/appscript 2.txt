@@ -1,0 +1,99 @@
+// ==============================================================================
+// Apps Script Reader Code (GET Endpoint) - Enhanced for Debugging
+// ROLE: Data Fusion Utility
+// FUNCTION: Fetches the most recent Temperature (T) and Light (L) data 
+//           from the 'control_onion' device for use by the Cloud Function.
+// ==============================================================================
+
+
+
+
+function testDoGet() { 
+    Logger.log("--- Starting manual test run ---");
+    const mockEvent = {
+        parameter: {
+            device_id: 'control_onion'
+        }
+    };
+    doGet(mockEvent);
+}
+
+function doGet(e) {
+  // 1. Validate that the request is a valid GET request and includes the 'device_id' parameter
+  if (!e || !e.parameter || !e.parameter.device_id) {
+    Logger.log("ERROR: Invalid request received.");
+    return ContentService.createTextOutput('{"status":"ERROR", "message":"Invalid GET request or missing device_id"}')
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
+  const targetDeviceId = e.parameter.device_id; 
+  
+  try {
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    if (!ss) {
+        Logger.log("FATAL: Could not get active Spreadsheet object. Check authorization.");
+        throw new Error("Spreadsheet access failed. Reauthorize script.");
+    }
+    
+    const sheet = ss.getSheetByName(SHEET_NAME);
+    if (!sheet) {
+        Logger.log("FATAL: Could not find sheet by name: " + SHEET_NAME);
+        throw new Error("Sheet name is incorrect or missing.");
+    }
+    
+    const lastRow = sheet.getLastRow();
+    Logger.log(`Access successful. Sheet: ${SHEET_NAME}, Last row: ${lastRow}`); // <-- 关键诊断日志
+    
+    // Ensure the sheet contains data (starts from row 2)
+    if (lastRow < 2) {
+      return ContentService.createTextOutput('{"status":"ERROR", "message":"Sheet is empty"}')
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    // 2. Performance Optimization: Limit search to the last 100 recorded rows
+    const startRow = Math.max(2, lastRow - 99); 
+    Logger.log(`Reading range: R${startRow}C2 to R${lastRow}C7 (6 columns).`); 
+    
+    // Read data from column B (device_id) to G (health)
+    const range = sheet.getRange(startRow, 2, lastRow - startRow + 1, 6); 
+    
+    // Read values and reverse the array: the newest records are at index [0]
+    const values = range.getValues().reverse(); 
+    
+    let latestControlData = null;
+
+    // 3. Iterate to find the most recent 'control_onion' data entry
+    // Array index map: row[0]=device_id, row[1]=moisture, row[2]=temp, row[3]=light
+    for (let i = 0; i < values.length; i++) {
+      const row = values[i];
+      if (row[0] === targetDeviceId) { 
+        latestControlData = {
+          status: "OK",
+          message: "Data found",
+          temp: row[2],  // Retrieve Temperature value (Corresponds to Column D)
+          light: row[3]  // Retrieve Light value (Corresponds to Column E)
+        };
+        break; // Stop iteration immediately upon finding the newest matching record
+      }
+    }
+
+    // 4. Return results to the Cloud Function
+    if (latestControlData) {
+      Logger.log("SUCCESS: Latest Control data found and returned.");
+      return ContentService.createTextOutput(JSON.stringify(latestControlData))
+        .setMimeType(ContentService.MimeType.JSON);
+    } else {
+      Logger.log("WARNING: No recent Control data found.");
+      return ContentService.createTextOutput('{"status":"ERROR", "message":"No recent Control data found within the last 100 rows"}')
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+  } catch (error) {
+    // Log the detailed error and return a JSON error structure for debugging
+    Logger.log("FATAL Script Error: " + error.toString());
+   
+    return ContentService.createTextOutput('{"status":"ERROR", "message":"Internal Reader Script Failed: ' + error.message + '"}')
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}

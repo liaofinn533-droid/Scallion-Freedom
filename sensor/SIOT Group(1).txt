@@ -1,0 +1,118 @@
+/* * ============================================================================
+ * PROJECT: Scallion Freedom - Node 1 (SIoT) - DEEP SLEEP FINAL
+ * ROLE: Periodic Telemetry + Data Sending (NO ACTUATOR CONTROL)
+ * ============================================================================
+ */
+
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h> 
+#include <ArduinoJson.h> 
+#include "esp_sleep.h" // 
+
+// ============================================================================
+// 1. CONFIGURATION PARAMETERS
+// ============================================================================
+
+const char* ssid     = "";
+const char* password = "";
+const char* server_url = "https://scallion-freedom-sensor-356495094540.europe-west2.run.app"; 
+
+// --- HARDWARE PINS ---
+#define PIN_SENSOR_MOISTURE 34      
+
+
+// --- TIMING CONSTANTS ---
+// 15 minutes in microseconds (15 * 60 * 1,000,000)
+#define UPLOAD_INTERVAL_US 900000000ULL 
+
+// ============================================================================
+
+// --- ACTUATOR CONTROL (REMOVED) ---
+
+
+// --- CORE LOGIC: Upload, Receive Command, and Go to Sleep ---
+void uploadToCloudAndSleep() {
+    // 1. Data Acquisition
+    int raw_moisture = analogRead(PIN_SENSOR_MOISTURE);
+    
+    Serial.printf("\n[SYSTEM] Uploading SIoT Group data. RAW Moisture ADC: %d\n", raw_moisture);
+
+    // 2. Telemetry Transmission (HTTPS POST)
+    WiFiClientSecure client;
+    client.setInsecure(); 
+    HTTPClient http;
+    
+    if (http.begin(client, server_url)) {
+        http.addHeader("Content-Type", "application/json");
+        
+        StaticJsonDocument<200> doc;
+        doc["device_id"] = "smart_onion_siot"; 
+        doc["moisture"]  = raw_moisture;      
+        doc["temp"]      = 0;                 
+        doc["light"]     = 0;                 
+        
+        String body;
+        serializeJson(doc, body);
+        int httpCode = http.POST(body);
+        
+        if (httpCode == HTTP_CODE_OK) { 
+            String response = http.getString();
+            Serial.printf("[CLOUD] POST Success. Downlink Response: %s\n", response.c_str());
+            
+            // 3. Receive the response from the Cloud Function and write this command to the C2 Setter
+            StaticJsonDocument<200> resDoc;
+            if (deserializeJson(resDoc, response) == DeserializationError::Ok) {
+                 if (resDoc.containsKey("pump")) {
+                     Serial.printf("[CLOUD] DOWNLINK: Received Pump status: %s (Command forwarded to C2)\n", resDoc["pump"].as<const char*>());
+                 }
+            }
+        } else {
+            Serial.printf("[CLOUD] HTTP POST failed. Code: %d\n", httpCode);
+        }
+        http.end();
+    } else {
+        Serial.println("[CLOUD] HTTP Connection Error.");
+    }
+    
+    // 4. Cleanup and Enter Deep Sleep
+    WiFi.disconnect(true);
+    Serial.println("[SYSTEM] Entering Deep Sleep for 15 minutes...");
+    
+    // Configure wakeup source to be the timer (15 minutes)
+    esp_sleep_enable_timer_wakeup(UPLOAD_INTERVAL_US);
+    
+    // Start deep sleep (CPU will halt until the timer fires)
+    esp_deep_sleep_start();
+}
+
+
+void setup() {
+    Serial.begin(115200);
+    
+    Serial.println("[SYSTEM] Node Waking Up. Starting work cycle.");
+
+    // Network Initialization (blocking connect)
+    WiFi.begin(ssid, password);
+    Serial.print("[WIFI] Connecting...");
+    int timeout = 0;
+    while (WiFi.status() != WL_CONNECTED && timeout < 20) { // Max 10s wait
+        delay(500);
+        Serial.print(".");
+        timeout++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\n[WIFI] Connected. Starting upload cycle.");
+        uploadToCloudAndSleep();
+    } else {
+        Serial.println("\n[WIFI] Connection Failed. Entering emergency sleep.");
+        esp_sleep_enable_timer_wakeup(60000000ULL); // 1 minute sleep
+        esp_deep_sleep_start();
+    }
+}
+
+// In Deep Sleep mode, the loop() function is typically not used.
+void loop() {
+    // This code block is empty
+}

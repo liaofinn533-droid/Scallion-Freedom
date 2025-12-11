@@ -1,0 +1,164 @@
+/* * ============================================================================
+ * PROJECT: Scallion Freedom IoT Monitoring System
+ * NODE: 2 (Control Group) - FINAL UNIFIED DEEP SLEEP VERSION (I2C INTEGRATED)
+ * ROLE: Periodic Telemetry Logging (M, T, L, H) - LOW POWER MODE
+ * PLATFORM: ESP32-WROOM
+ * ============================================================================
+ */
+
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h> 
+#include <ArduinoJson.h> 
+#include "esp_sleep.h"
+#include "DHT.h" 
+#include <Wire.h>   // CRITICAL: Required for I2C communication (BH1750)
+#include <BH1750.h> // CRITICAL: Required for Light Sensor
+
+// ============================================================================
+// 1. CONFIGURATION PARAMETERS
+// ============================================================================
+
+// --- NETWORK CREDENTIALS ---
+const char* ssid     = "";
+const char* password = "";
+
+// Google Function/Cloud Run HTTPS URL
+const char* server_url = "https://scallion-freedom-sensor-356495094540.europe-west2.run.app"; 
+
+// --- HARDWARE PINS (Based on your working configuration) ---
+#define PIN_SENSOR_MOISTURE 34       // Soil Moisture (Analog Input)
+#define PIN_SENSOR_DHT_DATA 27       // CRITICAL FIX: DHT is on GPIO 27
+// I2C pins are typically default (SDA=21, SCL=22) and set by Wire.begin()
+
+// DHT Sensor Configuration
+#define DHTTYPE DHT22 // Using DHT22 based on user confirmation
+DHT dht(PIN_SENSOR_DHT_DATA, DHTTYPE);
+
+// BH1750 Light Sensor Object
+BH1750 lightMeter;
+
+// --- TIMING CONSTANTS ---
+#define UPLOAD_INTERVAL_US 900000000ULL // 15 minutes in microseconds
+
+// ============================================================================
+
+// --- CORE LOGIC: Upload Data and Go to Sleep ---
+void uploadToCloudAndSleep() {
+    // Local variables for networking clients 
+    WiFiClientSecure client; 
+    HTTPClient http;
+    
+    // 1. Data Acquisition
+    int raw_moisture = analogRead(PIN_SENSOR_MOISTURE); 
+
+    float temp_C = dht.readTemperature();
+    float hum_pct = dht.readHumidity();
+    float lux = lightMeter.readLightLevel(); // Reading Lux value from BH1750
+
+    // CRITICAL SENSOR CHECK (DHT/BH1750)
+    if (isnan(temp_C) || isnan(hum_pct) || isnan(lux)) {
+        Serial.printf("[ERROR] Sensor failure detected (T:%.1f, L:%.1f)! Entering emergency sleep.\n", temp_C, lux);
+        goto EMERGENCY_SLEEP_SEQUENCE; 
+    }
+    
+    // Convert Lux to a PCT value for consistency in the JSON payload (Lux/800 * 100)
+    // Note: Python Function expects a number for 'light' key. We send Lux directly or PCT.
+    // For simplicity, we send the raw Lux value and the Function handles normalization.
+    
+    Serial.printf("\n[SYSTEM] Uploading Control data: M:%d, T:%.1fC, L:%.1f Lux\n", raw_moisture, temp_C, lux);
+
+    // 2. Telemetry Transmission (HTTPS POST)
+    client.setInsecure(); 
+    
+    if (http.begin(client, server_url)) {
+        http.addHeader("Content-Type", "application/json");
+        
+        StaticJsonDocument<300> doc; 
+        doc["device_id"]   = "control_onion";          
+        doc["moisture"]    = raw_moisture;       
+        doc["temp"]        = temp_C; 
+        doc["humidity"]    = hum_pct;
+        doc["light"]       = lux;          // Sending Lux value
+        
+        String body;
+        serializeJson(doc, body);
+        int httpCode = http.POST(body);
+        
+        if (httpCode == HTTP_CODE_OK) { 
+            String response = http.getString();
+            Serial.printf("[CLOUD] POST Success. Response: %s\n", response.c_str());
+        } else {
+            Serial.printf("[CLOUD] HTTP POST failed. Code: %d\n", httpCode);
+        }
+        http.end();
+    } else {
+        Serial.println("[CLOUD] HTTP Connection Error.");
+    }
+    
+    // 3. Enter Deep Sleep (Normal Sequence)
+    goto NORMAL_SLEEP_SEQUENCE;
+
+
+// --- SLEEP SEQUENCES ---
+
+EMERGENCY_SLEEP_SEQUENCE:; // Label for short sleep (if sensor fails)
+    WiFi.disconnect(true);
+    Serial.println("[SYSTEM] Entering emergency 1 minute sleep.");
+    esp_sleep_enable_timer_wakeup(60000000ULL); 
+    esp_deep_sleep_start();
+    
+NORMAL_SLEEP_SEQUENCE:; // Label for long sleep (after successful upload)
+    WiFi.disconnect(true);
+    Serial.println("[SYSTEM] Entering Deep Sleep for 15 minutes...");
+    esp_sleep_enable_timer_wakeup(UPLOAD_INTERVAL_US);
+    esp_deep_sleep_start();
+}
+
+
+// ============================================================================
+// 3. MAIN EXECUTION FLOW
+// ============================================================================
+
+void setup() {
+    Serial.begin(115200);
+    
+    // Initialize I2C for BH1750
+    Wire.begin(); 
+    
+    // Initialize DHT sensor (on GPIO 27)
+    dht.begin(); 
+    
+    // Initialize BH1750 (Must be done after Wire.begin())
+    if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) {
+        Serial.println("[SENSOR] BH1750 Light Sensor OK");
+    } else {
+        Serial.println("[ERROR] BH1750 not found (Check wiring/address!)");
+        // We will continue even if Light fails, but the sensor check above handles NaN
+    }
+    
+    Serial.println("[SYSTEM] Control Node Waking Up. Starting work cycle.");
+
+    // Network Initialization (blocking connect with timeout)
+    WiFi.begin(ssid, password);
+    Serial.print("[WIFI] Connecting...");
+    int timeout = 0;
+    while (WiFi.status() != WL_CONNECTED && timeout < 20) { 
+        delay(500);
+        Serial.print(".");
+        timeout++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\n[WIFI] Connected. Starting upload cycle.");
+        uploadToCloudAndSleep(); // Immediate execution and sleep
+    } else {
+        Serial.println("\n[WIFI] Connection Failed. Entering emergency sleep.");
+        esp_sleep_enable_timer_wakeup(60000000ULL); 
+        esp_deep_sleep_start();
+    }
+}
+
+void loop() {
+    // Empty loop
+}
