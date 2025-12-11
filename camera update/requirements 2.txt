@@ -1,0 +1,5 @@
+# Cloud Functions Framework
+functions-framework==3.*
+
+# Google Cloud Storage Client Library
+google-cloud-storage==2.*
