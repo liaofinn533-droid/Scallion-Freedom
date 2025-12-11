@@ -1,0 +1,28 @@
+// ==============================================================================
+// ROLE: Provides real-time MANUAL (A2) and AUTO (C2) pump status to Actuator Node.
+// ==============================================================================
+
+/**
+ * Handles GET requests from the Actuator Node to read the current pump status.
+ */
+function doGet(e) {
+  const CONTROL_SHEET = "CONTROL_UI"; 
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(CONTROL_SHEET);
+  
+  if (!sheet) {
+    // Error handling if sheet not found
+    return ContentService.createTextOutput('{"manual": "ERROR", "auto": "ERROR"}').setMimeType(ContentService.MimeType.JSON);
+  }
+  // A2
+  const manualStatus = sheet.getRange('A2').getValue(); 
+  // C2
+  const autoStatus = sheet.getRange('C2').getValue(); 
+  
+  // Back to JSON 
+  return ContentService.createTextOutput(JSON.stringify({
+    "manual": String(manualStatus).toUpperCase() || "OFF",
+    "auto": String(autoStatus).toUpperCase() || "OFF"
+  })).setMimeType(ContentService.MimeType.JSON);
+}

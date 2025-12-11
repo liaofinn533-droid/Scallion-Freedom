@@ -1,0 +1,35 @@
+// ==============================================================================
+// Apps Script C2 Setter Code 
+// ROLE: Receives POST request from Cloud Function to set AUTO_STATUS (C2).
+// ==============================================================================
+
+/**
+ * Handles POST requests from the Cloud Function to set the auto command.
+ */
+function doPost(e) {
+  const CONTROL_SHEET = "CONTROL_UI"; 
+  const AUTO_STATUS_CELL = "C2";
+  if (!e || e.postData.type !== "application/json") {
+    return ContentService.createTextOutput("Invalid Request").setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  try {
+    const data = JSON.parse(e.postData.contents);
+    const newCommand = data.auto_command || "OFF"; // 预期 payload: {"auto_command": "ON"}
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(CONTROL_SHEET);
+    
+    if (sheet) {
+      // write into 
+      sheet.getRange(AUTO_STATUS_CELL).setValue(newCommand);
+      return ContentService.createTextOutput('{"status":"OK", "message":"C2 updated"}').setMimeType(ContentService.MimeType.JSON);
+    } else {
+      // Sheet not found error
+      return ContentService.createTextOutput('{"status":"ERROR", "message":"Sheet not found"}').setMimeType(ContentService.MimeType.JSON);
+    }
+  } catch (error) {
+    // JSON parsing or general script error
+    return ContentService.createTextOutput('{"status":"ERROR", "message":"C2 Setter Failed"}').setMimeType(ContentService.MimeType.JSON);
+  }
+}
