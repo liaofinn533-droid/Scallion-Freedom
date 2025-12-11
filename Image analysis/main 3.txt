@@ -19,11 +19,11 @@ from google.cloud import storage
 # Utilising 'Gemini 2.0 Flash' for enhanced visual reasoning capabilities.
 MODEL_ID = 'gemini-2.0-flash'
 
-# 📐 Physical Parameters
+#  Physical Parameters
 RULER_REAL_CM = 16.0
 PERSPECTIVE_FACTOR = 0.84  # Ratio of D_onion / D_ruler = 42/50
 
-# 🌟 Optimised System Prompt
+#  Optimised System Prompt
 # Note: Instructions are phrased to enforce strict strict measurement protocols.
 SYSTEM_PROMPT = """
 You are a computer vision measurement assistant. Your sole task is to analyse the "relative pixel height" of objects within the frame.
@@ -77,7 +77,7 @@ def clean_json_string(text: str) -> str:
 
 def calculate_real_height(visual_h_onion, visual_h_ruler):
     """
-    🧮 Core Mathematical Calculation Logic (Python-side execution)
+     Core Mathematical Calculation Logic (Python-side execution)
     Derives real-world height based on visual ratios and perspective correction.
     """
     try:
