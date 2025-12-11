@@ -99,7 +99,6 @@ void checkManualCommand() {
         }
     } else {
         Serial.print("[ERROR] HTTP request failed, code: ");
-        // 打印详细错误信息
         Serial.println(http.errorToString(httpCode).c_str()); 
     }
     http.end();
