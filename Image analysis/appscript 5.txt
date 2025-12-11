@@ -1,0 +1,88 @@
+/**
+ * Primary Entry Point for the Web Application Interface.
+ * * Facilitates the reception of HTTP POST requests from remote IoT architecture (Python/C++).
+ * Automatically synthesises a unique 'Harvest_ID' to trigger downstream automation 
+ * protocols within the AppSheet environment.
+ */
+function doPost(e) {
+  // 1. Security Protocol & Input Validation
+  // Ensures the event object and payload exist before proceeding.
+  if (!e || !e.postData) { 
+    return ContentService.createTextOutput("Error: No JSON data received.").setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  try {
+    // 2. JSON Payload Parsing
+    // Decodes the incoming data stream into a manipulatable JavaScript object.
+    var data = JSON.parse(e.postData.contents);
+    
+    // 3. Spreadsheet Instance Retrieval
+    // Locates the active spreadsheet and the specific target worksheet.
+    var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    var sheetName = "Harvest_Status"; // Note: Ensure strict nomenclatural agreement with the tab name.
+    var sheet = spreadsheet.getSheetByName(sheetName);
+    
+    if (!sheet) {
+      return ContentService.createTextOutput("Error: Worksheet '" + sheetName + "' not found within the schema.").setMimeType(ContentService.MimeType.TEXT);
+    }
+    
+    // ============================================================
+    // Core Modification I: Unique Identifier Generation
+    // ============================================================
+    // Synthesises a unique identifier by concatenating the current epoch timestamp (ms) 
+    // with a stochastic integer. This mitigates the risk of ID collision.
+    // Format Specimen: ID_1702345678912_85
+    var uniqueID = "ID_" + new Date().getTime() + "_" + Math.floor(Math.random() * 100);
+
+    // ============================================================
+    //  Core Modification II: Data Array Construction (Inclusive of ID)
+    // ============================================================
+    // The array structure must strictly align with the column index of the target spreadsheet.
+    // As per the AppSheet schema, 'Harvest_ID' is designated to the final column.
+    
+    var rowData = [
+      // Column A: File Nomenclature
+      data.file_name,        
+      
+      // Column B: Overall Harvest Status
+      data.overall_status,   
+      
+      // Column C: Maximum Detected Height
+      data.max_height_cm,    
+      
+      // Column D: Biometric Data (Blank)
+      data.heights_blank,    
+      
+      // Column E: Biometric Data (Manual)
+      data.heights_manual,   
+      
+      // Column F: Biometric Data (SIOT)
+      data.heights_siot,
+
+      // Column G: Harvest_ID 
+      // (The unique identifier synthesised in step I)
+      uniqueID              
+    ];
+
+    // 4. Data Persistence (Row Appension)
+    // Commits the constructed array to the next available row in the dataset.
+    sheet.appendRow(rowData);
+
+    // 5. Transaction Confirmation
+    // Returns a success signal to the IoT client.
+    return ContentService.createTextOutput("Success: Data archived with ID " + uniqueID).setMimeType(ContentService.MimeType.TEXT);
+
+  } catch (error) {
+    // Exception Handling
+    // Captures and reports runtime errors to the client for debugging.
+    return ContentService.createTextOutput("Error: " + error.toString()).setMimeType(ContentService.MimeType.TEXT);
+  }
+}
+
+/**
+ * Health Check Endpoint.
+ * Confirms system status and advises on correct method invocation.
+ */
+function doGet(e) {
+  return ContentService.createTextOutput("System Active. ID Generation Protocol Enabled. Please utilise POST method.").setMimeType(ContentService.MimeType.TEXT);
+}
