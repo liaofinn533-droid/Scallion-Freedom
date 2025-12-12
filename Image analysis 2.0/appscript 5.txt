@@ -1,0 +1,67 @@
+// Handle incoming POST requests from IoT.
+// Creates a 'Harvest_ID' to trigger AppSheet automation.
+
+function doPost(e) {
+  // 1. Security Protocol & Input Validation
+  if (!e || !e.postData) { 
+    return ContentService.createTextOutput("Error: No JSON data received.").setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  try {
+    // 2. JSON Payload Parsing
+    var data = JSON.parse(e.postData.contents);
+    
+    // 3. Spreadsheet Instance Retrieval
+    var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    var sheetName = "Harvest_Status"; // Note: Ensure strict nomenclatural agreement with the tab name.
+    var sheet = spreadsheet.getSheetByName(sheetName);
+    
+    if (!sheet) {
+      return ContentService.createTextOutput("Error: Worksheet '" + sheetName + "' not found within the schema.").setMimeType(ContentService.MimeType.TEXT);
+    }
+    
+    var uniqueID = "ID_" + new Date().getTime() + "_" + Math.floor(Math.random() * 100);
+
+
+    
+    var rowData = [
+      // Column A: File Nomenclature
+      data.file_name,        
+      
+      // Column B: Overall Harvest Status
+      data.overall_status,   
+      
+      // Column C: Maximum Detected Height
+      data.max_height_cm,    
+      
+      // Column D: Blank
+      data.heights_blank,    
+      
+      // Column E: Manual
+      data.heights_manual,   
+      
+      // Column F: SIOT
+      data.heights_siot,
+
+      // Column G: Harvest_ID 
+      uniqueID              
+    ];
+
+    // 4. Data Persistence 
+    sheet.appendRow(rowData);
+
+    // 5. Transaction Confirmation
+    return ContentService.createTextOutput("Success: Data archived with ID " + uniqueID).setMimeType(ContentService.MimeType.TEXT);
+
+  } catch (error) {
+    return ContentService.createTextOutput("Error: " + error.toString()).setMimeType(ContentService.MimeType.TEXT);
+  }
+}
+
+/**
+ * Health Check Endpoint.
+ * Confirms system status and advises on correct method invocation.
+ */
+function doGet(e) {
+  return ContentService.createTextOutput("System Active. ID Generation Protocol Enabled. Please utilise POST method.").setMimeType(ContentService.MimeType.TEXT);
+}

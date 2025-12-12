@@ -1,0 +1,205 @@
+import datetime
+import os
+import time 
+from typing import Dict, Any, List
+import json
+import requests
+import traceback 
+import re
+
+# Google GenAI SDK
+from google import genai
+from google.genai import types
+from google.cloud import storage
+
+
+# Core Configuration
+
+MODEL_ID = 'gemini-2.0-flash'
+
+#  Physical Parameters
+RULER_REAL_CM = 16.0
+PERSPECTIVE_FACTOR = 0.84  # Ratio of D_onion / D_ruler = 42/50
+
+#  Optimised System Prompt
+SYSTEM_PROMPT = """
+You are a computer vision measurement assistant. Your sole task is to analyse the "relative pixel height" of objects within the frame.
+
+### Object Definitions
+1. Reference Object (Ruler): The purple cuboid present in the frame.
+2. Target Objects (Onions): The three scallion plants in the frame, ordered from left to right:
+   - Blank (Left)
+   - Manual (Centre)
+   - SIOT (Right)
+
+### Measurement Protocols
+Baseline: Taking the soil surface as the base, the baseline for all three scallions is consistent and located at the bottom of the image. The distance from the baseline to the bottom of the image is approximately 1/7.5 of the total image height.
+Vertex (Top): Defined as the highest tip of natural plant growth.
+Numerical Units: Please return "relative pixel values" (or a relative scale of 0-1000) based on the image resolution. I do not require specific units, only the proportional relationships.
+
+### Reasoning Steps
+1. Locate the purple ruler (height: 16cm) to serve as the reference value.
+2. Locate the three scallion plants and evaluate their respective vertical height values (onion_val).
+3. Ensure you are measuring the green plant matter, ignoring background interference.
+4. Assume the three scallions are free from perspective distortion, residing on a uniform horizontal plane equidistant from the lens.
+5. Focus on the distance from the highest point of each vertical scallion to the baseline; this constitutes the vertical height.
+6. If a scallion's tip exceeds the frame boundaries, this indicates a harvest-ready state (>20cm); strictly record the height as 23cm in such cases.
+
+### Output Format
+You must return only pure JSON. Do not use Markdown formatting. Key names must match the following exactly:
+{
+  "ruler_visual_height": float,
+  "onion_blank_visual_height": float,
+  "onion_manual_visual_height": float,
+  "onion_siot_visual_height": float,
+  "summary": "Brief visual analysis description"
+}
+"""
+
+APPS_SCRIPT_URL: str = "https://script.google.com/macros/s/AKfycbwVpf_o75giDB3f16ZD-IAbjW-yuFHNh5C4zOIIdtoClKG4LSaLlbugIc76e_rRUTLM/exec"
+GSPREAD_WORKSHEET_NAME: str = "Harvest_Status" 
+TARGET_HARVEST_HEIGHT_CM: float = 20.0 
+
+
+# Auxiliary Functions
+
+def clean_json_string(text: str) -> str:
+    """Cleans the Markdown formatting returned by the AI to extract pure JSON."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(json)?", "", text, flags=re.IGNORECASE)
+    if text.endswith("```"):
+        text = text[:-3]
+    return text.strip()
+
+def calculate_real_height(visual_h_onion, visual_h_ruler):
+    """
+     Core Mathematical Calculation Logic (Python-side execution)
+    Derives real-world height based on visual ratios and perspective correction.
+    """
+    try:
+        if visual_h_ruler == 0: return 0.0
+        ratio = visual_h_onion / visual_h_ruler
+        real_height = ratio * RULER_REAL_CM * PERSPECTIVE_FACTOR
+        return round(real_height, 2)
+    except Exception:
+        return 0.0
+
+# Cloud Function Entry Point
+
+def analyze_image(data: Any, context: Any = None) -> str:
+    print(f"[IOT-LOG] Starting Analysis with {MODEL_ID}...")
+    
+    harvest_status: str = "Processing..."
+    max_height_cm: float = 0.0
+    report_message: str = "Init"
+    file_name: str = "Unknown"
+    
+    # Data Container for results
+    results = {
+        "blank": 0.0,
+        "manual": 0.0,
+        "siot": 0.0,
+        "ruler_ratio": 0.0
+    }
+
+    # 1. Client Initialisation
+    gemini_client = None
+    try:
+        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        if not api_key: raise ValueError("Missing API Key")
+        gemini_client = genai.Client(api_key=api_key)
+    except Exception as e:
+        print(f"[IOT-CRITICAL] Client Init Failed: {e}")
+        return "Error: Client Init"
+
+    # 2. Business Logic
+    if gemini_client:
+        try:
+            # Parse trigger payload
+            if hasattr(data, 'get_json'): data = data.get_json(silent=True)
+            bucket_name = data.get('bucket') or (data.get('data', {}).get('bucket') if isinstance(data.get('data'), dict) else None)
+            file_name = data.get('name') or (data.get('data', {}).get('name') if isinstance(data.get('data'), dict) else None)
+            
+            if not bucket_name or not file_name:
+                print("[IOT-WARN] Invalid Trigger Payload")
+                return "Error: Invalid Trigger"
+
+            print(f"[IOT-LOG] Processing: {file_name}")
+            
+            # Download Image
+            storage_client = storage.Client()
+            blob = storage_client.bucket(bucket_name).blob(file_name)
+            image_bytes = blob.download_as_bytes()
+
+            # Invoke Gemini API
+            response = gemini_client.models.generate_content(
+                model=MODEL_ID,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    response_mime_type="application/json", 
+                    temperature=0.1
+                ),
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(text="Analyze image geometry."), 
+                            types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg')
+                        ]
+                    )
+                ]
+            )
+            
+            # Sanitisation and Parsing
+            raw_text = clean_json_string(response.text)
+            print(f"[IOT-DEBUG] AI Response: {raw_text}")
+            ai_data = json.loads(raw_text)
+            
+            # Extract Visual Data
+            v_ruler = float(ai_data.get("ruler_visual_height", 0))
+            v_blank = float(ai_data.get("onion_blank_visual_height", 0))
+            v_manual = float(ai_data.get("onion_manual_visual_height", 0))
+            v_siot = float(ai_data.get("onion_siot_visual_height", 0))
+            report_message = ai_data.get("summary", "Analysis Done")
+
+            # 3. Execute Physical Calculations via Python
+            if v_ruler > 0:
+                results["blank"] = calculate_real_height(v_blank, v_ruler)
+                results["manual"] = calculate_real_height(v_manual, v_ruler)
+                results["siot"] = calculate_real_height(v_siot, v_ruler)
+                results["ruler_ratio"] = round(v_siot / v_ruler, 3)
+                
+                max_height_cm = max(results["blank"], results["manual"], results["siot"])
+                
+                if max_height_cm >= TARGET_HARVEST_HEIGHT_CM:
+                    harvest_status = "YES - READY"
+                else:
+                    harvest_status = f"Growing ({max_height_cm}cm)"
+            else:
+                report_message = "Error: Ruler not detected"
+                harvest_status = "Check Camera"
+
+        except Exception as e:
+            report_message = f"Process Failed: {str(e)}"
+            harvest_status = "System Error"
+            print(f"[IOT-CRITICAL] {traceback.format_exc()}")
+
+    # 4. Upload Data to Google Sheets (Exception handling implemented for reliability)
+    try: 
+        payload = {
+            "file_name": file_name,
+            "overall_status": harvest_status, 
+            "max_height_cm": f"{max_height_cm:.2f} cm" if max_height_cm > 0 else "N/A",
+            "heights_blank": f"{results['blank']} cm" if results['blank'] > 0 else "N/A",
+            "heights_manual": f"{results['manual']} cm" if results['manual'] > 0 else "N/A",
+            "heights_siot": f"{results['siot']} cm" if results['siot'] > 0 else "N/A"
+        }
+        # Transmission
+        requests.post(APPS_SCRIPT_URL, data=json.dumps(payload), headers={'Content-Type': 'application/json'}, timeout=10)
+        print("[IOT-LOG] Data pushed to Sheets.")
+           
+    except Exception as e:
+        print(f"[IOT-WARN] Sheet Upload Failed: {e}")
+
+    return f"Done: {harvest_status}"

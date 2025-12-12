@@ -1,0 +1,170 @@
+
+# PROJECT: Scallion Freedom IoT Monitoring System
+# MODULE: Data Gateway (FINAL: Corrected Configuration & C2 Setter Integration)
+# ROLE: Central processing unit implementing control logic and data fusion.
+
+
+import functions_framework
+import datetime
+import json
+import logging
+import flask
+import requests 
+import os
+import time 
+
+
+logging.basicConfig(level=logging.INFO)
+
+# 1. CONFIGURATION CONSTANTS (UPDATED)
+
+
+SPREADSHEET_ID = '12vR8QKsl6KKQk5J5r6Qc1SaVAj4GpGlHB6AeLHqmEEc' 
+SHEET_NAME = 'Scallion_Data' 
+
+
+APPS_SCRIPT_WRITER_URL = 'https://script.google.com/macros/s/AKfycbzoQ_gQ34oUCrhIxfBNUjsatTtsnpGR1SPBWf7EkAzzDg-YK-i1AwUf2rqNS0Q3BtGt8Q/exec' 
+
+APPS_SCRIPT_READER_URL = 'https://script.google.com/macros/s/AKfycbxTC58foCKaNfGpcKygqleiS89LWyYMMR858VBxYDP-aBqmnmcG_lIeFRozyaXaUbc6Hw/exec' 
+
+
+APPS_SCRIPT_C2_SETTER_URL = 'https://script.google.com/macros/s/AKfycbzmJzg1QYwbgzLgr8p0GJQEE-K-bUC0rmEriahQuDtSdvD5PSKDIjrdT14CtkEixsfN/exec' 
+
+DRY_THRESHOLD = 2550 # Auto-Watering Threshold
+
+
+# 2. CORE LOGIC AND CALCULATION FUNCTIONS 
+
+def calculate_health_score(soil_moisture_raw, light_pct, temperature_c):
+    # Function body from previous steps (omitted for brevity)
+    W_M = 0.5; W_L = 0.3; W_T = 0.2;
+    V_WET = 1522; V_DRY = 4095; range_M = V_DRY - V_WET;
+    score_M = 100 * (1 - (int(soil_moisture_raw) - V_WET) / range_M); score_M = max(0, min(100, score_M))
+    L_IDEAL = 1200; score_L = 100 * (float(light_pct) / L_IDEAL); score_L = max(0, min(100, score_L))
+    T_IDEAL = 25.0; T_TOLERANCE = 10.0;
+    temp_diff = abs(float(temperature_c) - T_IDEAL)
+    score_T = 100 * max(0, (T_TOLERANCE - temp_diff) / T_TOLERANCE); score_T = max(0, min(100, score_T))
+    health_score = (W_M * score_M + W_L * score_L + W_T * score_T)
+    health_score = int(round(health_score));
+    return max(0, min(100, health_score))
+
+# 3. MAIN HTTP ENTRY POINT
+
+@functions_framework.http
+def process_sensor_data(request: flask.Request) -> tuple:
+    
+    try:
+        request_json = request.get_json(silent=True)
+        if not request_json: return 'Error: No JSON payload provided', 400
+        
+        # Data Extraction
+        device_id = request_json.get('device_id', 'unknown')
+        moisture = request_json.get('moisture', 0)
+        temp = request_json.get('temp', 0) 
+        light = request_json.get('light', 0)
+        
+        # Borrowing Data 
+        if device_id == "smart_onion_siot":
+            logging.info("SIOT detected. Attempting to borrow T/L data from Control group.")
+            
+            try:
+                reader_response = requests.get(
+                    APPS_SCRIPT_READER_URL,
+                    params={'device_id': 'control_onion'}, 
+                    timeout=5
+                )
+                
+                if reader_response.status_code == 200 and reader_response.json().get('status') == 'OK':
+                    borrowed_data = reader_response.json()
+                    temp_borrowed = borrowed_data.get('temp', 0)
+                    light_borrowed = borrowed_data.get('light', 0)
+                    
+                    if temp_borrowed and light_borrowed:
+                        temp = temp_borrowed 
+                        light = light_borrowed 
+                        logging.info(f"Successfully borrowed T:{temp}, L:{light} from Control.")
+                    else:
+                        logging.warning("Borrowed data is invalid or missing. Using defaults (0).")
+                else:
+                    logging.error(f"Reader AppScript Read Failed: Status {reader_response.status_code}. Response: {reader_response.text}")
+
+            except Exception as read_e:
+                logging.error(f"Error accessing Reader AppScript: {read_e}. Using defaults (0).")
+        
+        # Calculation
+        try:
+            health_score = calculate_health_score(moisture, light, temp)
+        except Exception as calc_e:
+            logging.error(f"Calculation Error: {calc_e}"); health_score = 0 
+
+        # Control Decision
+        pump_command_auto = "OFF"
+        if device_id == "smart_onion_siot" and int(moisture) > DRY_THRESHOLD:
+            pump_command_auto = "ON"
+        
+        # 1. Data Forwarding to Apps Script Writer 
+     
+        forward_payload = {
+            "device_id": device_id,
+            "moisture": moisture,
+            "temp": temp,
+            "light": light,
+            "pump_command": pump_command_auto, # Log the Auto decision
+            "health": health_score
+        }
+        
+        writer_response = requests.post(
+            APPS_SCRIPT_WRITER_URL,
+            json=forward_payload,
+            timeout=10
+        )
+
+        if writer_response.status_code != 200:
+            logging.error(f"Writer AppScript Write Failed: Status {writer_response.status_code}. Response: {writer_response.text}")
+
+        # 2. NEW: AUTO PULSE EXECUTION LOGIC 
+        
+        final_pump_status_for_downlink = pump_command_auto
+        
+        if pump_command_auto == "ON":
+            
+            
+            PULSE_TIME_SECONDS = 4 
+            POST_TIMEOUT = 15 
+            
+           
+            c2_payload_on = {"auto_command": "ON"} 
+            
+            try:
+                requests.post(APPS_SCRIPT_C2_SETTER_URL, json=c2_payload_on, timeout=POST_TIMEOUT)
+                logging.info(f"AUTO PULSE TRIGGERED: Wrote ON to C2. Waiting {PULSE_TIME_SECONDS}s for pulse...")
+                
+                
+                time.sleep(PULSE_TIME_SECONDS)
+                
+               
+                c2_payload_off = {"auto_command": "OFF"} 
+                requests.post(APPS_SCRIPT_C2_SETTER_URL, json=c2_payload_off, timeout=POST_TIMEOUT)
+                logging.info("Pulse finished. Wrote OFF to C2.")
+                
+                final_pump_status_for_downlink = "OFF_PULSE_COMPLETE"
+                
+            except Exception as e:
+                logging.error(f"PULSE EXECUTION FAILED: {e}. Water pump status may be stuck ON! Writing OFF now.")
+            
+                requests.post(APPS_SCRIPT_C2_SETTER_URL, json=c2_payload_off, timeout=POST_TIMEOUT)
+                final_pump_status_for_downlink = "PULSE_ERROR"
+
+
+        # Downlink Response to ESP32 
+        response_data = {
+            "pump": final_pump_status_for_downlink, 
+            "health": health_score,
+            "height": 14.5
+        }
+        
+        return json.dumps(response_data), 200, {'Content-Type': 'application/json'}
+
+    except Exception as e:
+        logging.critical(f"Global Server Error: {e}")
+        return f"Internal Server Error: {e}", 500

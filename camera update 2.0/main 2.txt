@@ -1,0 +1,95 @@
+"""
+Course: DESE71003 - Sensing and Internet of Things
+Project: Scallion Freedom
+Author: Han Wenyu (CID: 06065571)
+Date:   November 2025
+File:   main.py
+
+Description: 
+    Receives HTTP POST requests with Base64 images from the ESP32-CAM.
+    Decodes the image data, adds a timestamp, and saves the file to 
+    Google Cloud Storage.
+"""
+
+import functions_framework
+from google.cloud import storage
+import json
+import base64
+import datetime
+import logging
+import flask
+
+# Configuration Constants
+BUCKET_NAME = 'scallion-photo-wenyu'
+
+storage_client = storage.Client()
+
+@functions_framework.http
+def upload_image(request: flask.Request) -> tuple:
+    """
+    HTTP Cloud Function to handle image uploads from IoT devices.
+
+    This function parses a JSON payload containing a Base64 encoded image,
+    generates a server-side timestamp for data integrity, decodes the image, 
+    and stores it as a JPEG file in Google Cloud Storage.
+
+    Args:
+        request (flask.Request): The HTTP request object containing the JSON payload.
+                                 Expected format: {"image": "base64_string...", "filename": "optional"}
+
+    Returns:
+        tuple: A tuple containing the response message and HTTP status code.
+    """
+    
+    # 1. Payload Parsing and Validation
+    try:
+        request_json = request.get_json(silent=True)
+        
+        if not request_json or 'image' not in request_json:
+            if request.files and 'file' in request.files:
+                file = request.files['file']
+                timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
+                filename = f"onion_{timestamp_str}.jpg"
+                _save_to_bucket(file.read(), filename)
+                return 'Success: Image uploaded via Multipart.', 200
+            
+            logging.error("BadRequest: JSON payload missing 'image' key.")
+            return 'Error: No valid image data found in request.', 400
+
+        # 2. Filename Generation
+      
+        timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"onion_{timestamp_str}.jpg"
+        
+        # 3. Data Extraction & Decoding
+        image_b64 = request_json['image']
+        
+        # Convert the transmission format (Base64) back to binary (JPEG)
+        try:
+            image_data = base64.b64decode(image_b64)
+        except Exception as decode_error:
+            logging.error(f"DecodingError: Failed to decode Base64 string. {decode_error}")
+            return f'Error: Invalid Base64 encoding.', 400
+
+        # 4. Storage
+        _save_to_bucket(image_data, filename)
+
+        print(f"Successfully ingested: {filename} into bucket: {BUCKET_NAME}")
+        return f'Success: Saved as {filename}', 200
+
+    except Exception as e:
+        logging.critical(f"InternalServerError: {e}")
+        return f"Internal Error: {str(e)}", 500
+
+def _save_to_bucket(data: bytes, filename: str) -> None:
+    """
+    Helper function to write binary data to the specified GCS Bucket.
+    
+    Args:
+        data (bytes): The binary image data.
+        filename (str): The target filename in the bucket.
+    """
+    bucket = storage_client.bucket(BUCKET_NAME)
+    blob = bucket.blob(filename)
+    # Setting content_type allows browsers to preview the file directly
+    blob.upload_from_string(data, content_type='image/jpeg')

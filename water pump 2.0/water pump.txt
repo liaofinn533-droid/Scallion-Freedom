@@ -1,0 +1,121 @@
+/* * 
+ * PROJECT: Scallion Freedom - Actuator Node - CENTRAL ARBITRATION
+ * ROLE: Dedicated actuator monitoring Google Sheet for both manual (A2) and auto (C2) commands.
+ */
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h> 
+#include <ArduinoJson.h> 
+
+// CONFIGURATION 
+const char* WIFI_SSID = "";
+const char* WIFI_PASSWORD = "";
+
+// CRITICAL: Apps Script READER V2.0 URL 
+const char* READER_URL = "https://script.google.com/macros/s/AKfycbwY9LwLHduiO14CIuSecliywYLh7Zm35qBJGkl9NgIZOHyzCmTYbJ-InamNSS7w0YLR/exec"; 
+
+#define PIN_ACTUATOR_RELAY 26 
+#define CHECK_INTERVAL_MS 3000L 
+
+unsigned long lastCheckTime = 0;
+bool pumpIsOn = false; 
+
+// WiFi Setup
+void setupWiFi() {
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    Serial.print("Connecting to WiFi...");
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("\nWiFi connected.");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+}
+
+// Actuator Logic 
+void executeCommand(bool turnOn) {
+    if (turnOn && !pumpIsOn) {
+        digitalWrite(PIN_ACTUATOR_RELAY, HIGH); 
+        pumpIsOn = true;
+        Serial.println("[ACTUATOR] Pump ON.");
+    } else if (!turnOn && pumpIsOn) {
+        digitalWrite(PIN_ACTUATOR_RELAY, LOW);
+        pumpIsOn = false;
+        Serial.println("[ACTUATOR] Pump OFF.");
+    }
+}
+
+// Main Control Check with ARBITRATION (OR Logic) 
+void checkManualCommand() {
+    Serial.println("\n[CHECK] Sending GET request to Apps Script...");
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[CHECK] WiFi disconnected, attempting reconnect...");
+        setupWiFi(); 
+        return;
+    }
+    
+    WiFiClientSecure *client = new WiFiClientSecure;
+    client->setInsecure();
+    HTTPClient http;
+    http.begin(*client, READER_URL);
+    Serial.printf("[HTTP] Attempting connection to: %s\n", READER_URL);
+    
+    http.setTimeout(15000); // 15 seconds timeout
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    
+    int httpCode = http.GET();
+
+    if (httpCode > 0) { 
+        Serial.printf("[RESPONSE] HTTP Code: %d\n", httpCode); 
+        
+        if (httpCode == HTTP_CODE_OK) {
+            String payload = http.getString();
+            Serial.print("[RESPONSE] Payload received: ");
+            Serial.println(payload); 
+
+            StaticJsonDocument<100> doc;
+            DeserializationError error = deserializeJson(doc, payload);
+
+            if (!error) {
+                const char* manualState = doc["manual"] | "OFF";
+                const char* autoState = doc["auto"] | "OFF";
+                Serial.printf("[ARBITRATOR] Status Read: Manual=%s, Auto=%s\n", manualState, autoState);
+                
+                // OR Logic
+                bool shouldTurnOn = (strcmp(manualState, "ON") == 0) || (strcmp(autoState, "ON") == 0);
+
+                if (shouldTurnOn) {
+                    executeCommand(true);
+                } else {
+                    executeCommand(false);
+                }
+            } else {
+                Serial.print("[ERROR] JSON Deserialization failed: ");
+                Serial.println(error.f_str());
+            }
+        }
+    } else {
+        Serial.print("[ERROR] HTTP request failed, code: ");
+        Serial.println(http.errorToString(httpCode).c_str()); 
+    }
+    http.end();
+    delete client;
+}
+
+void setup() {
+    Serial.begin(115200);
+    pinMode(PIN_ACTUATOR_RELAY, OUTPUT);
+    digitalWrite(PIN_ACTUATOR_RELAY, LOW); 
+
+    setupWiFi();
+}
+
+void loop() {
+    if (millis() - lastCheckTime >= CHECK_INTERVAL_MS) {
+        checkManualCommand();
+        lastCheckTime = millis();
+    }
+    delay(10); 
+}

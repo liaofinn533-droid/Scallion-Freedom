@@ -1,0 +1,20 @@
+// Process GET request from Actuator Node to read pump status.
+function doGet(e) {
+  const CONTROL_SHEET = "CONTROL_UI"; 
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(CONTROL_SHEET);
+  
+  if (!sheet) {
+    return ContentService.createTextOutput('{"manual": "ERROR", "auto": "ERROR"}').setMimeType(ContentService.MimeType.JSON);
+  }
+
+  const manualStatus = sheet.getRange('A2').getValue(); 
+  const autoStatus = sheet.getRange('C2').getValue(); 
+  
+  // Back to JSON 
+  return ContentService.createTextOutput(JSON.stringify({
+    "manual": String(manualStatus).toUpperCase() || "OFF",
+    "auto": String(autoStatus).toUpperCase() || "OFF"
+  })).setMimeType(ContentService.MimeType.JSON);
+}
